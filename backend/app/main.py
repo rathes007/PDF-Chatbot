@@ -1,56 +1,113 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+"""
+PDF RAG Chatbot API
+Features:
+- Multi-file upload
+- Conversation memory
+- Token tracking
+- Confidence threshold
+- Enhanced metrics
+"""
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import shutil
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict
 from dotenv import load_dotenv
+import time
 
 # Load environment variables from .env file
 load_dotenv()
 
-from .rag import ingest_pdf, get_answer
-from .observability import log_interaction, get_metrics_summary
-import time
+from .rag import (
+    ingest_pdf, 
+    get_answer, 
+    get_uploaded_files, 
+    clear_knowledge_base,
+    clear_conversation,
+    conversation_history
+)
+from .observability import (
+    log_interaction, 
+    get_metrics_summary, 
+    log_error,
+    get_interaction_history,
+    clear_metrics
+)
 
-app = FastAPI(title="PDF RAG Chatbot", description="Chat with your PDFs with observability")
+app = FastAPI(
+    title="PDF RAG Chatbot",
+    description="Chat with your PDFs - with conversation memory, citations, and observability",
+    version="2.0.0"
+)
 
-# CORS Setup
+# CORS Setup - Allow all origins for development
 origins = [
-    "http://localhost:5173",  # Vite default
-    "http://localhost:5174",  # Vite fallback
+    "http://localhost:5173",
+    "http://localhost:5174",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
+    "*"  # Allow all for testing
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # Allow all origins for easy testing
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ============== REQUEST/RESPONSE MODELS ==============
+
 class ChatRequest(BaseModel):
     question: str
-    session_id: str
+    session_id: str = "default"
+    filter_filename: Optional[str] = None  # Optional: filter by specific file
+    use_history: bool = True  # Use conversation memory
 
 class ChatResponse(BaseModel):
     answer: str
     citations: List[str]
+    metadata: Dict
+
+class UploadResponse(BaseModel):
+    filename: str
+    status: str
+    chunks: int
+    total_files: int
+
+# ============== ENDPOINTS ==============
 
 @app.get("/")
 async def root():
-    return {"message": "PDF RAG Chatbot API is running"}
+    """Health check endpoint"""
+    return {
+        "message": "PDF RAG Chatbot API is running",
+        "version": "2.0.0",
+        "features": [
+            "Multi-file upload",
+            "Conversation memory",
+            "Token tracking",
+            "Confidence threshold",
+            "Document filtering",
+            "Enhanced observability"
+        ]
+    }
 
-@app.post("/upload")
+@app.post("/upload", response_model=UploadResponse)
 async def upload_pdf(file: UploadFile = File(...)):
-    # Note: Embeddings now use free local HuggingFace model
-    # Google API key is optional (only needed for LLM responses)
-    
+    """
+    Upload and process a PDF file.
+    Supports multiple files - each upload adds to the knowledge base.
+    """
     try:
+        # Validate file type
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        
         # Save temp file
         temp_dir = "temp_pdfs"
         os.makedirs(temp_dir, exist_ok=True)
@@ -58,40 +115,128 @@ async def upload_pdf(file: UploadFile = File(...)):
         
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+        
         # Ingest PDF
         num_chunks = ingest_pdf(file_path)
         
-        return {"filename": file.filename, "status": "Uploaded and processed", "chunks": num_chunks}
+        # Get total files count
+        uploaded = get_uploaded_files()
+        
+        return UploadResponse(
+            filename=file.filename,
+            status="Uploaded and processed successfully",
+            chunks=num_chunks,
+            total_files=len(uploaded)
+        )
+        
     except ValueError as ve:
-        # Specific error for missing API key from RAG module
+        log_error("upload_error", str(ve), {"filename": file.filename})
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
+        log_error("upload_error", str(e), {"filename": file.filename})
         import traceback
-        print(f"Upload error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+    """
+    Chat with the uploaded documents.
+    Features:
+    - Conversation memory (remembers previous questions)
+    - Confidence threshold (refuses if not confident)
+    - Document filtering (query specific file)
+    - Token tracking
+    """
     start_time = time.time()
+    
     try:
-        # Get answer
-        answer, citations = get_answer(request.question)
+        # Get answer with all metadata
+        answer, citations, metadata = get_answer(
+            question=request.question,
+            filter_filename=request.filter_filename,
+            use_history=request.use_history
+        )
         
         duration = time.time() - start_time
         
-        # Log interaction
-        log_interaction(request.session_id, request.question, answer, latency=duration)
+        # Log interaction with full metrics
+        log_interaction(
+            session_id=request.session_id,
+            question=request.question,
+            answer=answer,
+            latency=duration,
+            tokens_input=metadata.get("tokens_input", 0),
+            tokens_output=metadata.get("tokens_output", 0),
+            confidence=metadata.get("confidence", 0),
+            model=metadata.get("model", "unknown"),
+            was_refused=metadata.get("refused", False),
+            filter_used=request.filter_filename
+        )
         
-        return ChatResponse(answer=answer, citations=citations)
+        return ChatResponse(
+            answer=answer,
+            citations=citations,
+            metadata=metadata
+        )
+        
+    except Exception as e:
+        log_error("chat_error", str(e), {"question": request.question[:100]})
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/files")
+async def list_files():
+    """List all uploaded files with chunk counts"""
+    return {
+        "files": get_uploaded_files(),
+        "total_files": len(get_uploaded_files())
+    }
+
+@app.delete("/files")
+async def delete_all_files():
+    """Clear all uploaded documents and reset knowledge base"""
+    try:
+        clear_knowledge_base()
+        clear_metrics()
+        return {"status": "Knowledge base cleared", "files_remaining": 0}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/conversation")
+async def clear_chat_history():
+    """Clear conversation memory"""
+    clear_conversation()
+    return {"status": "Conversation history cleared"}
+
+@app.get("/conversation")
+async def get_chat_history():
+    """Get current conversation history"""
+    return {
+        "history": conversation_history,
+        "message_count": len(conversation_history)
+    }
+
 @app.get("/metrics")
 async def get_metrics():
-    # Return observability metrics
+    """
+    Get comprehensive metrics including:
+    - Total queries, average latency, p50/p95 latency
+    - Token usage
+    - Confidence scores
+    - Error rates
+    - Daily stats
+    """
     return get_metrics_summary()
+
+@app.get("/metrics/history")
+async def get_history(
+    session_id: Optional[str] = Query(None, description="Filter by session"),
+    limit: int = Query(50, description="Max results")
+):
+    """Get detailed interaction history"""
+    return {
+        "interactions": get_interaction_history(session_id, limit)
+    }
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
