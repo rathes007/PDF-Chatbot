@@ -1,0 +1,40 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #3b82f6;
+  /* Blue 500 */
+  --secondary: #64748b;
+  /* Slate 500 */
+  --background: #f8fafc;
+  /* Slate 50 */
+  --surface: #ffffff;
+  --text: #0f172a;
+  /* Slate 900 */
+  --accent: #dbeafe;
+  /* Blue 100 */
+}
+
+/* Dark Theme Variables */
+/* We use 'class' strategy for dark mode in tailwind config, so this matches that */
+.dark {
+  --primary: #60a5fa;
+  /* Blue 400 */
+  --secondary: #94a3b8;
+  /* Slate 400 */
+  --background: #0f172a;
+  /* Slate 900 */
+  --surface: #1e293b;
+  /* Slate 800 */
+  --text: #f1f5f9;
+  /* Slate 100 */
+  --accent: #1e3a8a;
+  /* Blue 950 */
+}
+
+body {
+  @apply bg-background text-text font-sans transition-colors duration-300;
+}
