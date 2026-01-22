@@ -22,6 +22,68 @@ MAX_CONVERSATION_HISTORY = 10  # Keep last N messages
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 100
 
+# ============== GREETING/CASUAL CHAT DETECTION ==============
+GREETING_PATTERNS = [
+    "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+    "howdy", "greetings", "sup", "what's up", "yo", "hola", "namaste"
+]
+
+CASUAL_PATTERNS = [
+    "how are you", "how's it going", "what can you do", "who are you",
+    "help", "thank you", "thanks", "bye", "goodbye", "see you"
+]
+
+def is_greeting_or_casual(text: str) -> bool:
+    """Check if the message is a greeting or casual conversation"""
+    text_lower = text.lower().strip()
+    # Check for greetings
+    for pattern in GREETING_PATTERNS:
+        if text_lower == pattern or text_lower.startswith(pattern + " ") or text_lower.startswith(pattern + "!") or text_lower.startswith(pattern + ","):
+            return True
+    # Check for casual patterns
+    for pattern in CASUAL_PATTERNS:
+        if pattern in text_lower:
+            return True
+    # Very short messages are likely casual
+    if len(text_lower.split()) <= 2 and not any(c.isdigit() for c in text_lower):
+        return True
+    return False
+
+def get_friendly_response(text: str) -> str:
+    """Generate a friendly response for greetings and casual chat"""
+    text_lower = text.lower().strip()
+    
+    # Greetings
+    for pattern in GREETING_PATTERNS:
+        if text_lower == pattern or text_lower.startswith(pattern):
+            return "Hello! 👋 I'm your PDF assistant. Upload a PDF document and ask me anything about its contents. How can I help you today?"
+    
+    # How are you
+    if "how are you" in text_lower or "how's it going" in text_lower:
+        return "I'm doing great, thank you for asking! 😊 I'm ready to help you with any questions about your PDF documents."
+    
+    # What can you do / help
+    if "what can you do" in text_lower or "help" in text_lower or "who are you" in text_lower:
+        return """I'm a PDF RAG Chatbot! Here's what I can do:
+
+📄 **Upload PDFs** - Click the upload button to add documents
+❓ **Ask Questions** - I'll find answers from your documents
+📍 **Citations** - I show you exactly where I found the information
+📊 **Dashboard** - View metrics and usage stats
+
+Upload a PDF to get started!"""
+    
+    # Thank you
+    if "thank" in text_lower:
+        return "You're welcome! 😊 Feel free to ask me anything else about your documents."
+    
+    # Goodbye
+    if "bye" in text_lower or "goodbye" in text_lower or "see you" in text_lower:
+        return "Goodbye! 👋 Come back anytime you need help with your PDFs!"
+    
+    # Default casual response
+    return "I'm here to help! Upload a PDF document and ask me questions about its contents. What would you like to know?"
+
 # ============== TOKEN COUNTING ==============
 def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
     """Count tokens using tiktoken"""
@@ -179,19 +241,36 @@ def get_uploaded_files() -> Dict[str, int]:
     return uploaded_documents.copy()
 
 def clear_knowledge_base():
-    """Clear all documents and reset"""
-    global vector_store, retriever, uploaded_documents, conversation_history
+    """Clear all documents and reset - properly clears ChromaDB"""
+    global vector_store, retriever, uploaded_documents, conversation_history, llm
     
     import shutil
     persist_directory = "./chroma_db"
-    if os.path.exists(persist_directory):
-        shutil.rmtree(persist_directory)
     
+    # First, try to delete the collection properly if vector_store exists
+    if vector_store is not None:
+        try:
+            # Try to delete the collection
+            vector_store.delete_collection()
+            print("✅ ChromaDB collection deleted")
+        except Exception as e:
+            print(f"Note: Could not delete collection: {e}")
+    
+    # Then remove the persist directory
+    if os.path.exists(persist_directory):
+        try:
+            shutil.rmtree(persist_directory)
+            print(f"✅ Removed {persist_directory}")
+        except Exception as e:
+            print(f"Warning: Could not remove {persist_directory}: {e}")
+    
+    # Reset all state except LLM (keep it initialized)
     vector_store = None
     retriever = None
     uploaded_documents = {}
     conversation_history = []
     
+    print("✅ Knowledge base cleared completely")
     return True
 
 # ============== RETRIEVAL WITH CONFIDENCE ==============
@@ -233,8 +312,21 @@ def get_answer(
     
     start_time = time.time()
     
+    # Handle greetings and casual conversation FIRST (before checking for PDFs)
+    if is_greeting_or_casual(question):
+        friendly_response = get_friendly_response(question)
+        add_to_history("user", question)
+        add_to_history("assistant", friendly_response)
+        return friendly_response, [], {
+            "confidence": 1.0,
+            "tokens_input": count_tokens(question),
+            "tokens_output": count_tokens(friendly_response),
+            "latency_ms": int((time.time() - start_time) * 1000),
+            "is_casual": True
+        }
+    
     if vector_store is None:
-        return "Please upload a PDF first to initialize the knowledge base.", [], {
+        return "👋 Please upload a PDF first! Click the upload button to add a document, then ask me questions about it.", [], {
             "confidence": 0,
             "tokens_used": 0,
             "latency_ms": 0

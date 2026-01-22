@@ -4,7 +4,8 @@ import { motion } from 'framer-motion';
 import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import axios from 'axios';
 
-const API_URL = 'http://localhost:8000';
+// Use relative URL when served from backend, or localhost for dev
+const API_URL = window.location.port === '5173' ? 'http://localhost:8000' : '';
 
 export function Dashboard() {
     const [metrics, setMetrics] = useState(null);

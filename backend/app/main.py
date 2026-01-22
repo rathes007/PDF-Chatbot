@@ -9,6 +9,8 @@ Features:
 """
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
 import shutil
@@ -237,6 +239,38 @@ async def get_history(
     return {
         "interactions": get_interaction_history(session_id, limit)
     }
+
+# ============== STATIC FILE SERVING (for sharing via ngrok) ==============
+# Path to frontend build directory - using absolute path
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRONTEND_BUILD_DIR = os.path.join(BACKEND_DIR, "..", "frontend", "dist")
+FRONTEND_BUILD_DIR = os.path.abspath(FRONTEND_BUILD_DIR)  # Normalize the path
+
+print(f"Looking for frontend build at: {FRONTEND_BUILD_DIR}")
+print(f"Frontend build exists: {os.path.exists(FRONTEND_BUILD_DIR)}")
+
+# Check if frontend build exists and mount it
+if os.path.exists(FRONTEND_BUILD_DIR):
+    print(f"✅ Mounting frontend from: {FRONTEND_BUILD_DIR}")
+    
+    # Serve static assets (js, css, etc.)
+    assets_dir = os.path.join(FRONTEND_BUILD_DIR, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    
+    # Serve index.html for the app route
+    @app.get("/app")
+    async def serve_spa():
+        """Serve the React SPA"""
+        return FileResponse(os.path.join(FRONTEND_BUILD_DIR, "index.html"))
+    
+    @app.get("/app/{full_path:path}")
+    async def serve_spa_path(full_path: str):
+        """Serve the React SPA for sub-routes"""
+        return FileResponse(os.path.join(FRONTEND_BUILD_DIR, "index.html"))
+else:
+    print(f"⚠️ Frontend build not found at: {FRONTEND_BUILD_DIR}")
+    print("Run 'npm run build' in the frontend folder to create the build")
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

@@ -4,7 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import { cn } from '../lib/utils';
 
-const API_URL = 'http://localhost:8000';
+// Use relative URL when served from backend, or localhost for dev
+const API_URL = window.location.port === '5173' ? 'http://localhost:8000' : '';
 
 export function ChatInterface() {
     const [messages, setMessages] = useState([
